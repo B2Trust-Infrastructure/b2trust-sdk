@@ -1,0 +1,56 @@
+{
+  "name": "@b2trust/sdk",
+  "version": "0.1.0-beta.1",
+  "description": "Official TypeScript SDK for the B2Trust business registry search API",
+  "main": "dist/cjs/index.js",
+  "module": "dist/esm/index.js",
+  "types": "dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/esm/index.js",
+      "require": "./dist/cjs/index.js",
+      "types": "./dist/types/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build:esm": "tsc -p tsconfig.esm.json",
+    "build:cjs": "tsc -p tsconfig.cjs.json",
+    "build:types": "tsc -p tsconfig.types.json",
+    "build": "npm run build:esm && npm run build:cjs && npm run build:types",
+    "test": "node --test --experimental-strip-types --experimental-transform-types __tests__/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run clean && npm run build"
+  },
+  "keywords": [
+    "business-registry",
+    "company-search",
+    "company-data",
+    "krs",
+    "companies-house",
+    "sirene",
+    "vat-validation",
+    "b2trust",
+    "sdk",
+    "api-client"
+  ],
+  "author": "B2Trust <contact@b2trust.com>",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/B2Trust-Infrastructure/b2trust-sdk"
+  },
+  "homepage": "https://b2trust.com/developers",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  }
+}
