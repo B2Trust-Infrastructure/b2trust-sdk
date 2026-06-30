@@ -1,16 +1,19 @@
 /**
  * B2Trust API Client
  *
- * Core HTTP client with authentication, timeout, and structured error handling.
- * Uses native `fetch` — no runtime dependencies.
+ * Native-fetch HTTP client with auth, timeout, typed errors, and automatic
+ * retry on HTTP 429 (honoring Retry-After). No runtime dependencies.
  */
 
 import type {
   ClientOptions,
   SearchOptions,
   SearchResponse,
-  CompanyData,
+  CompanyProfile,
   CompanyResponse,
+  BankVerification,
+  BankVerificationResponse,
+  Stats,
   StatsResponse,
   ApiErrorResponse,
 } from './types.ts';
@@ -26,126 +29,151 @@ import {
   NetworkError,
 } from './errors.ts';
 
-import { buildUrl, searchOptionsToParams } from './utils.ts';
+import { buildUrl, searchOptionsToParams, sleep } from './utils.ts';
 
 const DEFAULT_BASE_URL = 'https://b2trust.com';
 const DEFAULT_TIMEOUT = 10_000;
+const DEFAULT_MAX_RETRIES = 2;
+
+interface RequestInitLite {
+  method?: 'GET' | 'POST';
+  body?: unknown;
+}
 
 export class B2TrustClient {
   private readonly apiKey: string;
   private readonly baseUrl: string;
   private readonly timeout: number;
+  private readonly maxRetries: number;
 
   constructor(options: ClientOptions) {
     if (!options.apiKey) {
       throw new ValidationError('API key is required. Get one at https://b2trust.com/developers');
     }
-
     this.apiKey = options.apiKey;
     this.baseUrl = options.baseUrl ?? DEFAULT_BASE_URL;
     this.timeout = options.timeout ?? DEFAULT_TIMEOUT;
+    this.maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
   }
 
   /**
    * Search for companies by name or national identifier.
    *
-   * The API auto-detects whether the query is a company name or a national ID
-   * (KRS number, NIP, SIREN, CRN, ABN, etc.) unless you explicitly set `mode`.
-   *
-   * @param query - Company name or national identifier.
-   * @param options - Optional filters and pagination.
-   * @returns Search results with metadata.
-   *
    * @example
-   * ```ts
-   * const results = await client.search('Microsoft', { country: ['PL', 'UK'] });
-   * console.log(results.data); // CompanyData[]
-   * ```
+   * const results = await client.search('Microsoft', { country: ['PL', 'GB'] });
    */
   async search(query: string, options?: SearchOptions): Promise<SearchResponse> {
     if (!query || query.trim().length === 0) {
       throw new ValidationError('Search query must not be empty');
     }
-
     const params = searchOptionsToParams(query, options);
     const url = buildUrl(this.baseUrl, '/api/v1/search', params);
-
     return this.request<SearchResponse>(url);
   }
 
   /**
-   * Get a single company profile by its composite ID.
-   *
-   * @param id - Composite ID in `{country_code}-{national_id}` format (e.g. `PL-0000578849`).
-   * @returns The company data record.
+   * Get a full company profile by composite ID (`{country}-{national_id}`).
    *
    * @example
-   * ```ts
-   * const company = await client.getCompany('PL-0000578849');
-   * console.log(company.company_name);
-   * ```
+   * const company = await client.getCompany('PL-7342867148');
    */
-  async getCompany(id: string): Promise<CompanyData> {
+  async getCompany(id: string): Promise<CompanyProfile> {
     if (!id || id.trim().length === 0) {
       throw new ValidationError('Company ID must not be empty');
     }
-
     const url = buildUrl(this.baseUrl, `/api/v1/company/${encodeURIComponent(id)}`);
     const response = await this.request<CompanyResponse>(url);
     return response.data;
   }
 
   /**
-   * Get aggregate platform statistics (total companies, countries, registries).
+   * Verify whether a bank account is registered against a Polish company on the
+   * VAT Whitelist (Biała Lista). Poland only. Never returns account numbers.
    *
-   * @returns Current B2Trust platform statistics.
+   * @param id - Composite company ID, e.g. `PL-7342867148`.
+   * @param account - 26-digit NRB or `PL` + 26-digit IBAN (separators ignored).
    *
    * @example
-   * ```ts
-   * const stats = await client.getStats();
-   * console.log(`${stats.total_companies} companies indexed`);
-   * ```
+   * const result = await client.verifyBank('PL-7342867148', 'PL61109010140000071219812874');
    */
-  async getStats(): Promise<StatsResponse> {
-    const url = buildUrl(this.baseUrl, '/api/v1/stats');
-    return this.request<StatsResponse>(url);
+  async verifyBank(id: string, account: string): Promise<BankVerification> {
+    if (!id || id.trim().length === 0) {
+      throw new ValidationError('Company ID must not be empty');
+    }
+    if (!account || account.trim().length === 0) {
+      throw new ValidationError('Bank account must not be empty');
+    }
+    const url = buildUrl(this.baseUrl, `/api/v1/company/${encodeURIComponent(id)}/verify-bank`);
+    const response = await this.request<BankVerificationResponse>(url, { method: 'POST', body: { account } });
+    return response.data;
   }
 
-  // ---------------------------------------------------------------------------
-  // Internal HTTP layer
-  // ---------------------------------------------------------------------------
+  /**
+   * Get aggregate platform statistics.
+   *
+   * @example
+   * const stats = await client.getStats(); // { firms: '30.1M+', countries: 33, ... }
+   */
+  async getStats(): Promise<Stats> {
+    const url = buildUrl(this.baseUrl, '/api/v1/stats');
+    const response = await this.request<StatsResponse>(url);
+    return response.data;
+  }
 
-  private async request<T>(url: string): Promise<T> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeout);
+  // --- Internal HTTP layer -------------------------------------------------
 
-    let response: Response;
+  private async request<T>(url: string, init?: RequestInitLite): Promise<T> {
+    let attempt = 0;
 
-    try {
-      response = await fetch(url, {
-        method: 'GET',
-        headers: {
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), this.timeout);
+
+      let response: Response;
+      try {
+        const headers: Record<string, string> = {
           'X-API-Key': this.apiKey,
-          'Accept': 'application/json',
-        },
-        signal: controller.signal,
-      });
-    } catch (error: unknown) {
-      if (error instanceof DOMException && error.name === 'AbortError') {
-        throw new TimeoutError(`Request timed out after ${this.timeout}ms`);
+          Accept: 'application/json',
+        };
+        const reqInit: RequestInit = {
+          method: init?.method ?? 'GET',
+          headers,
+          signal: controller.signal,
+        };
+        if (init?.body !== undefined) {
+          headers['Content-Type'] = 'application/json';
+          reqInit.body = JSON.stringify(init.body);
+        }
+        response = await fetch(url, reqInit);
+      } catch (error: unknown) {
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          throw new TimeoutError(`Request timed out after ${this.timeout}ms`);
+        }
+        throw new NetworkError(error instanceof Error ? error.message : 'Network request failed');
+      } finally {
+        clearTimeout(timer);
       }
-      throw new NetworkError(
-        error instanceof Error ? error.message : 'Network request failed',
-      );
-    } finally {
-      clearTimeout(timer);
-    }
 
-    if (!response.ok) {
-      await this.handleErrorResponse(response);
-    }
+      // Auto-retry on 429 while attempts remain, honoring Retry-After.
+      if (response.status === 429 && attempt < this.maxRetries) {
+        attempt++;
+        await sleep(this.parseRetryAfterMs(response));
+        continue;
+      }
 
-    return (await response.json()) as T;
+      if (!response.ok) {
+        await this.handleErrorResponse(response);
+      }
+      return (await response.json()) as T;
+    }
+  }
+
+  /** Retry-After header (seconds) → ms; default 1000ms when absent/invalid. */
+  private parseRetryAfterMs(response: Response): number {
+    const header = response.headers.get('Retry-After');
+    const seconds = header ? parseInt(header, 10) : NaN;
+    return Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : 1000;
   }
 
   private async handleErrorResponse(response: Response): Promise<never> {
@@ -153,9 +181,8 @@ export class B2TrustClient {
     try {
       body = (await response.json()) as ApiErrorResponse;
     } catch {
-      // Response body is not JSON — fall through with undefined body
+      // not JSON — fall through
     }
-
     const message = body?.error ?? `HTTP ${response.status}`;
 
     switch (response.status) {
