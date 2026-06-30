@@ -1,6 +1,6 @@
 {
   "name": "@b2trust/sdk",
-  "version": "0.1.0-beta.1",
+  "version": "0.2.1",
   "description": "Official TypeScript SDK for the B2Trust business registry search API",
   "main": "dist/cjs/index.js",
   "module": "dist/esm/index.js",
