@@ -25,6 +25,7 @@
     "test": "node --test --experimental-strip-types --experimental-transform-types __tests__/*.test.ts",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist",
+    "prepare": "npm run build",
     "prepublishOnly": "npm run clean && npm run build"
   },
   "keywords": [
