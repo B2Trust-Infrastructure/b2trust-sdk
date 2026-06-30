@@ -1,180 +1,210 @@
 /**
  * B2Trust SDK Type Definitions
  *
- * Complete TypeScript interfaces for the B2Trust public API.
- * All types match the JSON response shapes from https://b2trust.com/api/v1/.
+ * TypeScript interfaces for the B2Trust public API. Shapes mirror the live JSON
+ * responses from https://b2trust.com/api/v1/ (Identity Consensus model: the API
+ * reports how many sources confirm a company — registry_count — never which
+ * registries, so source_registries is intentionally absent).
  */
 
-// ---------------------------------------------------------------------------
-// Client configuration
-// ---------------------------------------------------------------------------
+// --- Client configuration --------------------------------------------------
 
-/** Options for initializing a {@link B2TrustClient}. */
 export interface ClientOptions {
   /** Your B2Trust API key. Required. Get one at https://b2trust.com/developers */
   apiKey: string;
-
   /** Base URL of the B2Trust API. Defaults to `https://b2trust.com`. */
   baseUrl?: string;
-
   /** Request timeout in milliseconds. Defaults to `10000` (10 s). */
   timeout?: number;
+  /** Max automatic retries on HTTP 429 (honors Retry-After). Defaults to `2`. */
+  maxRetries?: number;
 }
 
-// ---------------------------------------------------------------------------
-// Search
-// ---------------------------------------------------------------------------
+// --- Shared value types ----------------------------------------------------
 
-/** Options for {@link B2TrustClient.search}. */
-export interface SearchOptions {
-  /** Filter by one or more 2-letter country codes (e.g. `'PL'` or `['PL','UK']`). */
-  country?: string | string[];
-
-  /** Filter by company status. Defaults to `'active'`. */
-  status?: 'active' | 'dissolved' | 'all';
-
-  /** Filter by legal form (e.g. `'sp. z o.o.'`, `'Ltd'`). */
-  legalForm?: string;
-
-  /** Sort order. Defaults to `'relevance'`. */
-  sort?: 'relevance' | 'name' | 'date';
-
-  /** Page number (1-based). Defaults to `1`. */
-  page?: number;
-
-  /** Results per page. Defaults to `500`. */
-  limit?: number;
-
-  /** Explicit search mode. Auto-detected when omitted. */
-  mode?: 'name' | 'taxid';
-}
-
-/** Successful response from the search endpoint. */
-export interface SearchResponse {
-  status: 'ok';
-  data: CompanyData[];
-  meta: SearchMeta;
-}
-
-/** Metadata returned alongside search results. */
-export interface SearchMeta {
-  /** Total number of matching companies across all pages. */
-  total: number;
-
-  /** The original query string. */
-  query: string;
-
-  /** Detected search mode — `name` or `taxid`. */
-  mode: 'name' | 'taxid';
-
-  /** Server-side query duration in milliseconds. */
-  query_time_ms: number;
-
-  /** Number of results per country code. */
-  country_counts: Record<string, number>;
-
-  /** Distinct legal forms present in the result set. */
-  legal_forms: string[];
-}
-
-// ---------------------------------------------------------------------------
-// Company
-// ---------------------------------------------------------------------------
-
-/** A single company record returned by the B2Trust API. */
-export interface CompanyData {
-  /** ISO 3166-1 alpha-2 country code (e.g. `'PL'`, `'UK'`, `'FR'`). */
-  country_code: string;
-
-  /** National registration identifier (e.g. KRS number, CRN, SIREN). */
-  national_id: string;
-
-  /** Official registered company name. */
-  company_name: string;
-
-  /** Legal form label (e.g. `'sp. z o.o.'`, `'Ltd'`), or `null` if unavailable. */
-  legal_form: string | null;
-
-  /** Current company status. */
-  status: 'active' | 'dissolved' | 'in_liquidation' | 'unknown';
-
-  /** Registered address, or `null` if unavailable. */
-  registered_address: Address | null;
-
-  /** Registries that contributed data for this company. */
-  source_registries: SourceRegistry[];
-
-  /** B2Trust confidence score for this record. */
-  confidence: ConfidenceScore;
-}
+/** Company status. Known values plus any string the API may add. */
+export type CompanyStatus = 'active' | 'dissolved' | 'suspended' | 'inactive' | (string & {});
 
 /** Postal address of a company. */
 export interface Address {
-  /** Street name and number. */
   street?: string;
-
-  /** City or locality. */
   city?: string;
-
-  /** Postal / ZIP code. */
-  postalCode?: string;
-
+  postal_code?: string;
   /** ISO 3166-1 alpha-2 country code. */
   country: string;
 }
 
-/** A registry that contributed data to a company record. */
-export interface SourceRegistry {
-  /** Registry key (e.g. `'KRS'`, `'Companies House'`, `'SIRENE'`). */
-  key: string;
-
-  /** ISO 8601 timestamp of when data was last fetched from this registry. */
-  fetchedAt: string;
-}
-
-/** B2Trust data confidence assessment. */
+/** B2Trust confidence assessment for a search result. */
 export interface ConfidenceScore {
-  /** Numeric score from 0 (no confidence) to 100 (fully verified). */
+  /** 0 (no confidence) to 100 (fully verified). */
   score: number;
-
-  /** Human-readable confidence tier. */
-  level: 'low' | 'medium' | 'high';
-
+  /** Human-readable tier, e.g. `'High'`. */
+  label: string;
+  /** UI colour hint, e.g. `'green'`. */
+  color: string;
   /** Individual factors that contributed to the score. */
   factors: string[];
 }
 
-// ---------------------------------------------------------------------------
-// Company profile
-// ---------------------------------------------------------------------------
+/** A business-activity classification code (e.g. PKD/NACE). */
+export interface ActivityCode {
+  code: string;
+  system: string;
+  description: string;
+}
 
-/** Response from the company profile endpoint. */
+/** Confirmation-source breakdown by TYPE (never registry names). */
+export interface SourceBreakdown {
+  registry: number;
+  search: number;
+  node_scan: number;
+  opc: number;
+  bulk_import: number;
+}
+
+// --- Search ----------------------------------------------------------------
+
+export interface SearchOptions {
+  /** Filter by one or more ISO alpha-2 codes (e.g. `'PL'` or `['PL','GB']`). UK is `GB`. */
+  country?: string | string[];
+  /** Status filter. Defaults to `'active'`. */
+  status?: 'active' | 'dissolved' | 'suspended' | 'inactive' | 'all';
+  /** Legal-form filter (one or more; case-insensitive partial match). */
+  legalForm?: string | string[];
+  /** Registered-address city filter. */
+  city?: string;
+  /** Earliest registration date, `YYYY-MM-DD`. */
+  dateFrom?: string;
+  /** Latest registration date, `YYYY-MM-DD`. */
+  dateTo?: string;
+  /** Sort order. Defaults to `'relevance'`. */
+  sort?: 'relevance' | 'newest' | 'oldest' | 'name_asc' | 'name_desc' | 'country' | 'confidence';
+  /** Page number (1-based). Defaults to `1`. */
+  page?: number;
+  /** Results per page. Defaults to `50`, max `500`. */
+  limit?: number;
+  /** Force search mode. Auto-detected when omitted. */
+  mode?: 'name' | 'taxid';
+  /** Response locale hint (e.g. `'en'`, `'pl'`). */
+  locale?: string;
+}
+
+/** A single result item from `GET /api/v1/search`. */
+export interface CompanySearchResult {
+  country_code: string;
+  national_id: string;
+  registry_number: string | null;
+  company_name: string;
+  legal_form: string | null;
+  status: CompanyStatus;
+  registered_address: Address | null;
+  registration_date: string | null;
+  /** How many independent sources confirm this company. */
+  registry_count: number;
+  vat_number: string | null;
+  fetched_at: string | null;
+  confidence: ConfidenceScore;
+  first_indexed_at: string | null;
+  vies_status: 'valid' | 'invalid' | 'unavailable' | null;
+  vies_note: string | null;
+}
+
+export interface SearchMeta {
+  total: number;
+  page: number;
+  limit: number;
+  total_pages: number;
+  query_time_ms: number;
+  cache_hit: boolean;
+  countries: string[];
+  country_counts: Record<string, number>;
+  legal_forms: string[];
+}
+
+export interface SearchResponse {
+  status: 'ok';
+  query: string;
+  mode: 'name' | 'taxid';
+  data: CompanySearchResult[];
+  meta: SearchMeta;
+}
+
+// --- Company profile -------------------------------------------------------
+
+/** Full company profile from `GET /api/v1/company/{id}`. */
+export interface CompanyProfile {
+  country_code: string;
+  national_id: string;
+  vat_number: string | null;
+  secondary_id: string | null;
+  registry_number: string | null;
+  company_name: string;
+  legal_form: string | null;
+  registered_address: Address | null;
+  registration_date: string | null;
+  status: CompanyStatus;
+  activity_codes: ActivityCode[];
+  registry_count: number;
+  bank_accounts_count: number;
+  verified_at: string | null;
+  first_indexed_at: string | null;
+  vies_cross_check_status: 'valid_match' | 'valid_mismatch' | 'invalid' | 'error' | null;
+  vies_name: string | null;
+  vies_match_score: number | null;
+  vies_checked_at: string | null;
+  vies_vat_id: string | null;
+  confirmation_count: number;
+  source_breakdown: SourceBreakdown;
+  first_seen: string | null;
+  last_confirmed: string | null;
+}
+
+export interface CompanyMeta {
+  cached: boolean;
+  enriched: boolean;
+  source_count: number;
+  fetched_at: string;
+  expires_at: string;
+}
+
 export interface CompanyResponse {
   status: 'ok';
-  data: CompanyData;
+  data: CompanyProfile;
+  meta: CompanyMeta;
 }
 
-// ---------------------------------------------------------------------------
-// Stats
-// ---------------------------------------------------------------------------
+// --- Bank verification -----------------------------------------------------
 
-/** Aggregate platform statistics. */
+export interface BankVerification {
+  verified: boolean;
+  company_name: string;
+  account_count: number;
+  checked_at: string;
+}
+
+export interface BankVerificationResponse {
+  status: 'ok';
+  data: BankVerification;
+}
+
+// --- Stats -----------------------------------------------------------------
+
+export interface Stats {
+  firms: string;
+  countries: number;
+  continents: number;
+  price: string;
+  searches_today: number;
+  cached_companies: number;
+}
+
 export interface StatsResponse {
-  /** Total number of companies in the B2Trust index. */
-  total_companies: number;
-
-  /** Number of countries covered. */
-  countries_count: number;
-
-  /** Number of government registries connected. */
-  registries_count: number;
+  status: 'ok';
+  data: Stats;
 }
 
-// ---------------------------------------------------------------------------
-// Error response (raw API shape)
-// ---------------------------------------------------------------------------
+// --- Error response (raw API shape) ----------------------------------------
 
-/** Raw error response body from the B2Trust API. */
 export interface ApiErrorResponse {
   status: 'error';
   error: string;
