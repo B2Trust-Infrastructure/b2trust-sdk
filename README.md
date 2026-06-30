@@ -1,15 +1,16 @@
 # @b2trust/sdk
 
-[![npm version](https://img.shields.io/npm/v/@b2trust/sdk)](https://www.npmjs.com/package/@b2trust/sdk)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue)](https://www.typescriptlang.org/)
 
 Official TypeScript SDK for searching 10+ government business registries through one API.
 
+> **Not yet on npm.** Install from GitHub for now (see below); the npm release is coming.
+
 ## Install
 
 ```bash
-npm install @b2trust/sdk
+npm install github:B2Trust-Infrastructure/b2trust-sdk
 ```
 
 ## Quick Start
@@ -19,19 +20,28 @@ import { B2TrustClient } from '@b2trust/sdk';
 
 const b2trust = new B2TrustClient({ apiKey: 'your-api-key' });
 
-const results = await b2trust.search('Microsoft', { country: ['PL', 'UK'] });
+const results = await b2trust.search('Microsoft', { country: ['PL', 'GB'] });
 for (const company of results.data) {
   console.log(`${company.country_code} | ${company.company_name} (${company.national_id})`);
+  console.log(`  confirmed by ${company.registry_count} sources`);
 }
 ```
+
+## What you get
+
+B2Trust is a **verification / consensus** layer over government registries. The SDK reports
+**how many independent sources confirm** a company (`registry_count`, and on the full profile a
+`source_breakdown` by type) — never *which* registries. Natural-person data (directors, beneficial
+owners, shareholders) is never returned.
 
 ## Features
 
 - **Fully typed** — every parameter, response, and error has TypeScript definitions
 - **Auto-ID detection** — pass a KRS number, NIP, SIREN, CRN, or ABN and the API routes to the correct registry
 - **Structured errors** — catch `RateLimitError`, `AuthenticationError`, `NotFoundError` by type
-- **Zero dependencies** — uses native `fetch` (Node.js 18+)
-- **Dual format** — works with ESM (`import`) and CommonJS (`require`)
+- **Auto-retry on 429** — honors `Retry-After` (configurable via `maxRetries`)
+- **Zero dependencies** — native `fetch` (Node.js 18+)
+- **Dual format** — ESM (`import`) and CommonJS (`require`)
 
 ## API Reference
 
@@ -42,10 +52,9 @@ for (const company of results.data) {
 | `apiKey` | `string` | *required* | Your B2Trust API key |
 | `baseUrl` | `string` | `https://b2trust.com` | API base URL |
 | `timeout` | `number` | `10000` | Request timeout in ms |
+| `maxRetries` | `number` | `2` | Auto-retries on HTTP 429 (honors `Retry-After`) |
 
 ### `client.search(query, options?)`
-
-Search for companies by name or national identifier.
 
 ```typescript
 const results = await b2trust.search('Volkswagen', {
@@ -56,48 +65,59 @@ const results = await b2trust.search('Volkswagen', {
 });
 ```
 
-**Options:**
-
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `country` | `string \| string[]` | all | Filter by country codes |
-| `status` | `'active' \| 'dissolved' \| 'all'` | `'active'` | Company status filter |
-| `legalForm` | `string` | — | Legal form filter |
-| `sort` | `'relevance' \| 'name' \| 'date'` | `'relevance'` | Sort order |
+| `country` | `string \| string[]` | all | ISO alpha-2 codes (UK is `GB`) |
+| `status` | `'active' \| 'dissolved' \| 'suspended' \| 'inactive' \| 'all'` | `'active'` | Status filter |
+| `legalForm` | `string \| string[]` | — | Legal-form filter |
+| `city` | `string` | — | Registered-address city |
+| `dateFrom` / `dateTo` | `string` (`YYYY-MM-DD`) | — | Registration-date range |
+| `sort` | `'relevance' \| 'newest' \| 'oldest' \| 'name_asc' \| 'name_desc' \| 'country' \| 'confidence'` | `'relevance'` | Sort order |
 | `page` | `number` | `1` | Page number |
-| `limit` | `number` | `500` | Results per page |
+| `limit` | `number` | `50` | Results per page (max 500) |
 | `mode` | `'name' \| 'taxid'` | auto | Force search mode |
+| `locale` | `string` | `en` | Response locale hint |
 
-**Returns:** `SearchResponse` with `data: CompanyData[]` and `meta: SearchMeta`
+**Returns:** `SearchResponse` — `{ status, query, mode, data: CompanySearchResult[], meta: SearchMeta }`.
 
 ### `client.getCompany(id)`
 
-Get a single company profile by composite ID.
-
 ```typescript
-const company = await b2trust.getCompany('PL-0000578849');
-console.log(company.company_name); // "Example sp. z o.o."
+const company = await b2trust.getCompany('PL-7342867148');
+console.log(company.company_name, '— confirmed by', company.confirmation_count, 'records');
 ```
 
-**Parameters:**
-- `id` — Composite ID in `{country}-{national_id}` format (e.g. `PL-0000578849`, `UK-12345678`)
+- `id` — composite ID `{country}-{national_id}` (e.g. `PL-7342867148`, `GB-12345678`).
 
-**Returns:** `CompanyData`
+**Returns:** `CompanyProfile` (identity + trust metadata: `registry_count`, `source_breakdown`,
+`confirmation_count`, VIES cross-check, `bank_accounts_count`, `first_seen`/`last_confirmed`).
+
+### `client.verifyBank(id, account)`
+
+Verify whether a bank account is registered against a Polish company on the VAT Whitelist (Biała
+Lista). Poland only. Never returns account numbers.
+
+```typescript
+const result = await b2trust.verifyBank('PL-7342867148', 'PL61109010140000071219812874');
+console.log(result.verified); // boolean
+```
+
+- `account` — a 26-digit NRB or a `PL`-prefixed IBAN (separators ignored).
+
+**Returns:** `BankVerification` — `{ verified, company_name, account_count, checked_at }`.
 
 ### `client.getStats()`
 
-Get aggregate platform statistics.
-
 ```typescript
 const stats = await b2trust.getStats();
-// { total_companies: 5025576, countries_count: 19, registries_count: 33 }
+// { firms: '30.1M+', countries: 33, continents: 4, price: '€0.00', searches_today: 6, cached_companies: 29471564 }
 ```
 
-**Returns:** `StatsResponse`
+**Returns:** `Stats`.
 
 ## Error Handling
 
-All errors extend `B2TrustError` with `message`, `statusCode`, and `response` properties.
+All errors extend `B2TrustError` with `message`, `statusCode`, and `response`.
 
 ```typescript
 import { B2TrustClient, RateLimitError, AuthenticationError, NotFoundError } from '@b2trust/sdk';
@@ -118,49 +138,34 @@ try {
 | Error Class | HTTP Status | When |
 |-------------|-------------|------|
 | `AuthenticationError` | 401, 403 | Invalid or missing API key |
-| `RateLimitError` | 429 | Rate limit exceeded (has `retryAfter` in seconds) |
-| `NotFoundError` | 404 | Company ID not found |
+| `RateLimitError` | 429 | Rate limit exceeded (has `retryAfter`; auto-retried `maxRetries` times first) |
+| `NotFoundError` | 404 | Company not found |
 | `ValidationError` | 400 | Invalid parameters |
 | `ServerError` | 500+ | Server error |
 | `TimeoutError` | — | Request exceeded timeout |
 | `NetworkError` | — | Connection failed |
 
-## Supported Countries
-
-| Country | Registry | ID Format | Example |
-|---------|----------|-----------|---------|
-| Poland | KRS, CEIDG | KRS: 10 digits, NIP: 10 digits | `PL-0000578849` |
-| United Kingdom | Companies House | CRN: 8 chars | `UK-12345678` |
-| France | SIRENE | SIREN: 9 digits, SIRET: 14 digits | `FR-123456789` |
-| Germany | Handelsregister | Court_Type_Number | `DE-Hamburg_HRB_150148` |
-| Norway | Bronnysund | Org nr: 9 digits | `NO-123456789` |
-| Czech Republic | ARES | ICO: 8 digits | `CZ-12345678` |
-| United States | SEC EDGAR | CIK: up to 10 digits | `US-0001234567` |
-| Australia | ABN Lookup | ABN: 11 digits | `AU-51824753556` |
-| New Zealand | NZBN | NZBN: 13 digits | `NZ-1234567890123` |
-| EU-wide | VIES | VAT number | VAT validation only |
-
 ## Rate Limits
 
-- **20 requests per day** per API key
-- **3 requests per minute** per API key
+Trial keys (`b2t_trial_*`):
 
-Need higher limits? [Contact us](https://b2trust.com/developers) for enterprise access.
+- **20 requests per minute** per key
+- **200 requests per day** per key
+- **14-day** key validity
+
+Need higher limits? [Contact us](https://b2trust.com/developers).
 
 ## Beta Notice
 
-> **This SDK is in beta.** The API surface may change between minor versions until v1.0. Pin your version in `package.json` to avoid surprises.
+> This SDK is pre-1.0. The surface may change between minor versions until v1.0. Pin your version.
 
 ## Get an API Key
 
-Sign up for a free API key at [b2trust.com/developers](https://b2trust.com/developers).
+Sign up at [b2trust.com/developers](https://b2trust.com/developers).
 
 ## Links
 
-- [B2Trust Platform](https://b2trust.com)
-- [API Documentation](https://b2trust.com/developers)
-- [awesome-business-registries](https://github.com/B2Trust-Infrastructure/awesome-business-registries) — curated list of open business registries
-- [registry-api-examples](https://github.com/B2Trust-Infrastructure/registry-api-examples) — raw API examples for each registry
+- [B2Trust Platform](https://b2trust.com) · [API Documentation](https://b2trust.com/developers)
 
 ## License
 
